@@ -51,13 +51,20 @@ COPY backend/requirements.txt .
 # ROCm wheel index. Default 6.3 (RDNA1/2/3); set ROCM_VERSION=7.2 for RDNA4.
 ARG ROCM_VERSION=6.3
 
-# For ROCm, make the PyTorch ROCm index primary so every install below resolves
-# torch to ROCm wheels instead of the default CUDA build.
-RUN if [ "$PYTORCH_VARIANT" = "rocm" ]; then \
+# Install the requested PyTorch variant before requirements.txt so its
+# unqualified torch and torchaudio requirements are already satisfied.
+RUN if [ "$PYTORCH_VARIANT" = "cpu" ]; then \
+      pip install --no-cache-dir --prefix=/install \
+        --index-url https://download.pytorch.org/whl/cpu \
+        torch torchaudio; \
+    elif [ "$PYTORCH_VARIANT" = "rocm" ]; then \
       pip install --no-cache-dir --prefix=/install \
         --index-url "https://download.pytorch.org/whl/rocm${ROCM_VERSION}" \
         torch torchaudio && \
       printf '[global]\nindex-url = https://download.pytorch.org/whl/rocm%s\nextra-index-url = https://pypi.org/simple\n' "$ROCM_VERSION" > /etc/pip.conf; \
+    else \
+      echo "Unsupported PYTORCH_VARIANT: $PYTORCH_VARIANT" >&2; \
+      exit 1; \
     fi
 
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
