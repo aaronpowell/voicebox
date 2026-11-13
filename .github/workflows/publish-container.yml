@@ -82,4 +82,5 @@ jobs:
         env:
           IMAGE_REF: ghcr.io/${{ github.repository }}:cpu-sha-${{ github.sha }}
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
-        run: echo "Published image: \`${IMAGE_REF}@${IMAGE_DIGEST}\`" >> "${GITHUB_STEP_SUMMARY}"
+        run: |
+          echo "Published image: \`${IMAGE_REF}@${IMAGE_DIGEST}\`" >> "${GITHUB_STEP_SUMMARY}"
