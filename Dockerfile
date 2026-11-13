@@ -51,12 +51,13 @@ COPY backend/requirements.txt .
 # ROCm wheel index. Default 6.3 (RDNA1/2/3); set ROCM_VERSION=7.2 for RDNA4.
 ARG ROCM_VERSION=6.3
 
-# Install the requested PyTorch variant before requirements.txt so its
-# unqualified torch and torchaudio requirements are already satisfied.
+# Pin the requested PyTorch variant across every pip install in this stage;
+# --prefix packages are outside pip's default environment during resolution.
 RUN if [ "$PYTORCH_VARIANT" = "cpu" ]; then \
       pip install --no-cache-dir --prefix=/install \
         --index-url https://download.pytorch.org/whl/cpu \
-        torch torchaudio; \
+        torch torchaudio && \
+      printf '[global]\nindex-url = https://download.pytorch.org/whl/cpu\nextra-index-url = https://pypi.org/simple\n' > /etc/pip.conf; \
     elif [ "$PYTORCH_VARIANT" = "rocm" ]; then \
       pip install --no-cache-dir --prefix=/install \
         --index-url "https://download.pytorch.org/whl/rocm${ROCM_VERSION}" \
@@ -65,7 +66,12 @@ RUN if [ "$PYTORCH_VARIANT" = "cpu" ]; then \
     else \
       echo "Unsupported PYTORCH_VARIANT: $PYTORCH_VARIANT" >&2; \
       exit 1; \
-    fi
+    fi && \
+    TORCH_VERSION="$(PYTHONPATH=/install/lib/python3.12/site-packages python -c 'from importlib.metadata import version; print(version("torch"))')" && \
+    TORCHAUDIO_VERSION="$(PYTHONPATH=/install/lib/python3.12/site-packages python -c 'from importlib.metadata import version; print(version("torchaudio"))')" && \
+    printf 'torch==%s\ntorchaudio==%s\n' "$TORCH_VERSION" "$TORCHAUDIO_VERSION" > /tmp/torch-constraints.txt
+
+ENV PIP_CONSTRAINT=/tmp/torch-constraints.txt
 
 RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
 RUN pip install --no-cache-dir --prefix=/install --no-deps chatterbox-tts
@@ -77,6 +83,8 @@ RUN pip install --no-cache-dir --prefix=/install \
 
 # === Stage 3: Runtime ===
 FROM python:3.12-slim
+
+ARG PYTORCH_VARIANT
 
 # Create non-root user; the entrypoint joins GPU device groups at runtime.
 RUN groupadd -r voicebox && \
@@ -110,6 +118,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Copy installed Python packages from builder stage
 COPY --from=backend-builder /install /usr/local
+
+RUN if [ "$PYTORCH_VARIANT" = "cpu" ]; then \
+      python -c 'import torch; hip = getattr(torch.version, "hip", None); assert torch.version.cuda is None and hip is None, f"CPU image resolved a GPU-enabled PyTorch build: CUDA={torch.version.cuda}, HIP={hip}"'; \
+    fi
 
 # Copy backend application code
 COPY --chown=voicebox:voicebox backend/ /app/backend/

@@ -70,3 +70,10 @@ jobs:
           fi
 
           echo "Published image: \`${IMAGE_REF}@${IMAGE_DIGEST}\`" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Verify CPU-only PyTorch runtime
+        env:
+          IMAGE_REF: ghcr.io/${{ github.repository }}:cpu-sha-${{ github.sha }}
+        run: |
+          docker run --rm --entrypoint python "${IMAGE_REF}" -c \
+            "import torch; hip = getattr(torch.version, 'hip', None); assert torch.version.cuda is None and hip is None, f'Unexpected GPU runtime: CUDA={torch.version.cuda}, HIP={hip}'; print('CPU-only PyTorch', torch.__version__)"
