@@ -74,7 +74,7 @@ jobs:
           for runner in native ivy; do
             prefix=()
             if [ "$runner" = ivy ]; then prefix=(/usr/bin/qemu-x86_64-static -cpu IvyBridge); fi
-            timeout --kill-after=5s 180s "${prefix[@]}" "$RUNNER_TEMP/worker/bin/python" -c 'import torch, torchaudio, transformers; from chatterbox.tts_turbo import ChatterboxTurboTTS; print("WORKER", torch.__version__, torchaudio.__version__, transformers.__version__, flush=True); assert transformers.__version__ == "5.2.0"'
+            timeout --kill-after=5s 180s "${prefix[@]}" "$RUNNER_TEMP/worker/bin/python" -c 'import torch, torchaudio, transformers, perth.perth_net; from chatterbox.tts_turbo import ChatterboxTurboTTS; print("WORKER", torch.__version__, torchaudio.__version__, transformers.__version__, flush=True); assert transformers.__version__ == "5.2.0"'
           done
       - name: Download pinned Kokoro model
         id: kokoro_download
@@ -83,12 +83,23 @@ jobs:
         env:
           HF_HUB_OFFLINE: "0"
         run: timeout --kill-after=5s 600s "$RUNNER_TEMP/host/bin/python" scripts/engine-isolation-poc/download.py kokoro "$RUNNER_TEMP/kokoro-model"
-      - name: Kokoro generation on Ivy Bridge
-        id: kokoro
+      - name: Kokoro native CPU generation
+        id: kokoro_native
         if: steps.kokoro_download.outcome == 'success'
         continue-on-error: true
+        env:
+          PIP_NO_INDEX: "1"
         run: |
-          timeout --kill-after=5s 600s /usr/bin/time -v /usr/bin/qemu-x86_64-static -cpu IvyBridge \
+          timeout --kill-after=5s 300s /usr/bin/time -v \
+            "$RUNNER_TEMP/host/bin/python" scripts/engine-isolation-poc/host.py kokoro --model-dir "$RUNNER_TEMP/kokoro-model"
+      - name: Kokoro generation on Ivy Bridge
+        id: kokoro_ivy
+        if: steps.kokoro_native.outcome == 'success'
+        continue-on-error: true
+        env:
+          PIP_NO_INDEX: "1"
+        run: |
+          timeout --kill-after=5s 180s /usr/bin/time -v /usr/bin/qemu-x86_64-static -cpu IvyBridge \
             "$RUNNER_TEMP/host/bin/python" scripts/engine-isolation-poc/host.py kokoro --model-dir "$RUNNER_TEMP/kokoro-model"
       - name: Download pinned Chatterbox Turbo model
         id: chatterbox_download
@@ -97,10 +108,22 @@ jobs:
         env:
           HF_HUB_OFFLINE: "0"
         run: timeout --kill-after=5s 600s "$RUNNER_TEMP/host/bin/python" scripts/engine-isolation-poc/download.py chatterbox "$RUNNER_TEMP/chatterbox-model"
-      - name: Chatterbox worker generation on Ivy Bridge
-        id: chatterbox
+      - name: Chatterbox worker native CPU generation
+        id: chatterbox_native
         if: steps.chatterbox_download.outcome == 'success'
         continue-on-error: true
+        env:
+          PIP_NO_INDEX: "1"
+        run: |
+          timeout --kill-after=5s 600s /usr/bin/time -v \
+            "$RUNNER_TEMP/host/bin/python" scripts/engine-isolation-poc/host.py chatterbox \
+            --model-dir "$RUNNER_TEMP/chatterbox-model" --worker-python "$RUNNER_TEMP/worker/bin/python" --timeout 540
+      - name: Chatterbox worker generation on Ivy Bridge
+        id: chatterbox_ivy
+        if: steps.chatterbox_native.outcome == 'success'
+        continue-on-error: true
+        env:
+          PIP_NO_INDEX: "1"
         run: |
           timeout --kill-after=5s 660s /usr/bin/time -v /usr/bin/qemu-x86_64-static -cpu IvyBridge \
             "$RUNNER_TEMP/host/bin/python" scripts/engine-isolation-poc/host.py chatterbox \
@@ -124,13 +147,15 @@ jobs:
           HOST_IMPORTS: ${{ steps.host_imports.outcome }}
           WORKER_IMPORTS: ${{ steps.worker_imports.outcome }}
           KOKORO_DOWNLOAD: ${{ steps.kokoro_download.outcome }}
-          KOKORO: ${{ steps.kokoro.outcome }}
+          KOKORO_NATIVE: ${{ steps.kokoro_native.outcome }}
+          KOKORO_IVY: ${{ steps.kokoro_ivy.outcome }}
           CHATTERBOX_DOWNLOAD: ${{ steps.chatterbox_download.outcome }}
-          CHATTERBOX: ${{ steps.chatterbox.outcome }}
+          CHATTERBOX_NATIVE: ${{ steps.chatterbox_native.outcome }}
+          CHATTERBOX_IVY: ${{ steps.chatterbox_ivy.outcome }}
         run: |
           echo "Host dependencies=$HOST_DEPENDENCIES imports=$HOST_IMPORTS"
           echo "Worker dependencies=$WORKER_DEPENDENCIES imports=$WORKER_IMPORTS"
-          echo "Kokoro download=$KOKORO_DOWNLOAD generation=$KOKORO"
-          echo "Chatterbox download=$CHATTERBOX_DOWNLOAD generation=$CHATTERBOX"
+          echo "Kokoro download=$KOKORO_DOWNLOAD native=$KOKORO_NATIVE ivy=$KOKORO_IVY"
+          echo "Chatterbox download=$CHATTERBOX_DOWNLOAD native=$CHATTERBOX_NATIVE ivy=$CHATTERBOX_IVY"
           df -h "$RUNNER_TEMP"
-          [ "$KOKORO" = success ] && [ "$CHATTERBOX" = success ]
+          [ "$KOKORO_IVY" = success ] && [ "$CHATTERBOX_IVY" = success ]

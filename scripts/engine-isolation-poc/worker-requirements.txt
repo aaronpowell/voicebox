@@ -1,4 +1,7 @@
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.6.0+cpu
 torchaudio==2.6.0+cpu
+numpy==1.26.4
+numba==0.60.0
+setuptools==80.9.0
 chatterbox-tts==0.1.7
