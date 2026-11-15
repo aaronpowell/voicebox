@@ -23,6 +23,7 @@ jobs:
       TOKENIZERS_PARALLELISM: "false"
       HF_HUB_DISABLE_TELEMETRY: "1"
       HF_HUB_OFFLINE: "1"
+      RUN_MODEL_TESTS: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[poc-generation]') }}
     steps:
       - uses: actions/checkout@v4
       - name: Record runner and disk
@@ -41,7 +42,7 @@ jobs:
         continue-on-error: true
         run: |
           python3.12 -m venv "$RUNNER_TEMP/host"
-          timeout --kill-after=5s 600s "$RUNNER_TEMP/host/bin/python" -m pip install --no-cache-dir -r scripts/engine-isolation-poc/host-requirements.txt
+          timeout --kill-after=5s 600s "$RUNNER_TEMP/host/bin/python" -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -r scripts/engine-isolation-poc/host-lock.txt
           "$RUNNER_TEMP/host/bin/python" -m pip freeze --all > "$RUNNER_TEMP/host-resolved.txt"
           "$RUNNER_TEMP/host/bin/python" -m pip check
           du -sh "$RUNNER_TEMP/host"
@@ -51,7 +52,7 @@ jobs:
         continue-on-error: true
         run: |
           python3.12 -m venv "$RUNNER_TEMP/worker"
-          timeout --kill-after=5s 600s "$RUNNER_TEMP/worker/bin/python" -m pip install --no-cache-dir -r scripts/engine-isolation-poc/worker-requirements.txt
+          timeout --kill-after=5s 600s "$RUNNER_TEMP/worker/bin/python" -m pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -r scripts/engine-isolation-poc/worker-lock.txt
           "$RUNNER_TEMP/worker/bin/python" -m pip freeze --all > "$RUNNER_TEMP/worker-resolved.txt"
           "$RUNNER_TEMP/worker/bin/python" -m pip check
           du -sh "$RUNNER_TEMP/worker"
@@ -76,9 +77,16 @@ jobs:
             if [ "$runner" = ivy ]; then prefix=(/usr/bin/qemu-x86_64-static -cpu IvyBridge); fi
             timeout --kill-after=5s 180s "${prefix[@]}" "$RUNNER_TEMP/worker/bin/python" -c 'import torch, torchaudio, transformers, perth.perth_net; from chatterbox.tts_turbo import ChatterboxTurboTTS; print("WORKER", torch.__version__, torchaudio.__version__, transformers.__version__, flush=True); assert transformers.__version__ == "5.2.0"'
           done
+      - name: Verify conflicting versions in separate processes
+        id: coexistence
+        if: steps.host_imports.outcome == 'success' && steps.worker_imports.outcome == 'success'
+        continue-on-error: true
+        run: |
+          timeout --kill-after=5s 180s "$RUNNER_TEMP/host/bin/python" scripts/engine-isolation-poc/test_coexistence.py --worker-python "$RUNNER_TEMP/worker/bin/python"
+          timeout --kill-after=5s 240s /usr/bin/qemu-x86_64-static -cpu IvyBridge "$RUNNER_TEMP/host/bin/python" scripts/engine-isolation-poc/test_coexistence.py --worker-python "$RUNNER_TEMP/worker/bin/python" --runner /usr/bin/qemu-x86_64-static
       - name: Download pinned Kokoro model
         id: kokoro_download
-        if: steps.host_imports.outcome == 'success'
+        if: env.RUN_MODEL_TESTS == 'true' && steps.coexistence.outcome == 'success'
         continue-on-error: true
         env:
           HF_HUB_OFFLINE: "0"
@@ -103,7 +111,7 @@ jobs:
             "$RUNNER_TEMP/host/bin/python" scripts/engine-isolation-poc/host.py kokoro --model-dir "$RUNNER_TEMP/kokoro-model"
       - name: Download pinned Chatterbox Turbo model
         id: chatterbox_download
-        if: steps.host_imports.outcome == 'success' && steps.worker_imports.outcome == 'success'
+        if: env.RUN_MODEL_TESTS == 'true' && steps.coexistence.outcome == 'success'
         continue-on-error: true
         env:
           HF_HUB_OFFLINE: "0"
@@ -146,6 +154,7 @@ jobs:
           WORKER_DEPENDENCIES: ${{ steps.worker_dependencies.outcome }}
           HOST_IMPORTS: ${{ steps.host_imports.outcome }}
           WORKER_IMPORTS: ${{ steps.worker_imports.outcome }}
+          COEXISTENCE: ${{ steps.coexistence.outcome }}
           KOKORO_DOWNLOAD: ${{ steps.kokoro_download.outcome }}
           KOKORO_NATIVE: ${{ steps.kokoro_native.outcome }}
           KOKORO_IVY: ${{ steps.kokoro_ivy.outcome }}
@@ -155,7 +164,10 @@ jobs:
         run: |
           echo "Host dependencies=$HOST_DEPENDENCIES imports=$HOST_IMPORTS"
           echo "Worker dependencies=$WORKER_DEPENDENCIES imports=$WORKER_IMPORTS"
+          echo "Cross-process coexistence=$COEXISTENCE"
           echo "Kokoro download=$KOKORO_DOWNLOAD native=$KOKORO_NATIVE ivy=$KOKORO_IVY"
           echo "Chatterbox download=$CHATTERBOX_DOWNLOAD native=$CHATTERBOX_NATIVE ivy=$CHATTERBOX_IVY"
           df -h "$RUNNER_TEMP"
+          [ "$COEXISTENCE" = success ] || exit 1
+          if [ "$RUN_MODEL_TESTS" != true ]; then exit 0; fi
           [ "$KOKORO_IVY" = success ] && [ "$CHATTERBOX_IVY" = success ]
