@@ -46,3 +46,13 @@ jobs:
           common=(--rm --ulimit core=0:0 --network none -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 -v /usr/bin/qemu-x86_64-static:/qemu:ro -v "$RUNNER_TEMP/ivy:/test" -v "$GITHUB_WORKSPACE/scripts/test_ivy_bridge_image.py:/smoke.py:ro" --entrypoint /qemu "$image" -cpu IvyBridge)
           timeout --kill-after=5s 120s docker run -e PYTHONPATH=/test/candidate "${common[@]}" /usr/local/bin/python -X faulthandler -c 'import pedalboard; print("Portable candidate:", pedalboard.__version__)'
           timeout --kill-after=5s 300s docker run -e PYTHONPATH=/test/candidate:/app "${common[@]}" /usr/local/bin/python -X faulthandler /smoke.py
+      - name: Build and verify the full image without publishing
+        timeout-minutes: 35
+        run: |
+          docker build --tag voicebox-ivy-candidate .
+          timeout --kill-after=5s 300s docker run --rm --ulimit core=0:0 --network none \
+            -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 -e PYTHONPATH=/app \
+            -v /usr/bin/qemu-x86_64-static:/qemu:ro \
+            -v "$GITHUB_WORKSPACE/scripts/test_ivy_bridge_image.py:/smoke.py:ro" \
+            --entrypoint /qemu voicebox-ivy-candidate -cpu IvyBridge \
+            /usr/local/bin/python -X faulthandler /smoke.py

@@ -82,7 +82,8 @@ numba>=0.61.0; python_version >= "3.13"
 # 0.9.26 builds Linux x86_64 wheels for the portable AVX baseline rather than
 # the build host's native CPU, which can crash older CPUs on import.
 # https://github.com/spotify/pedalboard/releases/tag/v0.9.26
-pedalboard==0.9.26
+pedalboard==0.9.26; sys_platform == "linux" and platform_machine == "x86_64"
+pedalboard>=0.9.0,<0.9.21; sys_platform != "linux" or platform_machine != "x86_64"
 
 # HTTP client (for CUDA backend download)
 httpx>=0.27.0
