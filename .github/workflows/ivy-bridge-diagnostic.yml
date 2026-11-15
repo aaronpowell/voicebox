@@ -20,7 +20,7 @@ jobs:
       - name: Install emulator
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-user-static
+          sudo apt-get install -y -qq qemu-user-static gdb
       - name: Compare original and portable wheel
         shell: bash
         run: |
@@ -31,15 +31,18 @@ jobs:
           python -m pip download --only-binary=:all: --no-deps --dest "$RUNNER_TEMP/ivy" pedalboard==0.9.26
           python -m zipfile -e "$RUNNER_TEMP/ivy/"*.whl "$RUNNER_TEMP/ivy/candidate"
           chmod -R a+rX "$RUNNER_TEMP/ivy"
-          common=(--rm --ulimit core=0:0 --network none -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 -v /usr/bin/qemu-x86_64-static:/qemu:ro -v "$RUNNER_TEMP/ivy:/test" --entrypoint /qemu "$image" -cpu IvyBridge)
-          set +e
-          timeout --kill-after=5s 120s docker run "${common[@]}" -d in_asm -D /test/original-trace /usr/local/bin/python -X faulthandler -c 'import pedalboard; print(pedalboard.__version__)'
-          status=$?
-          set -e
-          echo "Original wheel emulator exit status: $status"
-          tail -n 100 "$RUNNER_TEMP/ivy/original-trace"
-          if [[ "$status" -ne 132 ]]; then
-            echo "::error::Expected original wheel to exit with SIGILL (132), got $status"
-            exit 1
-          fi
+          docker run -d --name ivy-sigill --network host --ulimit core=0:0 \
+            -e OPENBLAS_NUM_THREADS=1 -v /usr/bin/qemu-x86_64-static:/qemu:ro \
+            --entrypoint /qemu "$image" -cpu IvyBridge -g 1234 \
+            /usr/local/bin/python -c 'import pedalboard'
+          trap 'docker rm -f ivy-sigill >/dev/null 2>&1 || true' EXIT
+          sleep 3
+          timeout --kill-after=5s 90s gdb -q -batch \
+            -ex 'target remote 127.0.0.1:1234' -ex 'continue' \
+            -ex 'x/8i $pc' -ex 'info registers' | tee "$RUNNER_TEMP/ivy/gdb.txt"
+          grep -q 'SIGILL' "$RUNNER_TEMP/ivy/gdb.txt"
+          docker rm -f ivy-sigill
+          trap - EXIT
+          common=(--rm --ulimit core=0:0 --network none -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 -v /usr/bin/qemu-x86_64-static:/qemu:ro -v "$RUNNER_TEMP/ivy:/test" -v "$GITHUB_WORKSPACE/scripts/test_ivy_bridge_image.py:/smoke.py:ro" --entrypoint /qemu "$image" -cpu IvyBridge)
           timeout --kill-after=5s 120s docker run -e PYTHONPATH=/test/candidate "${common[@]}" /usr/local/bin/python -X faulthandler -c 'import pedalboard; print("Portable candidate:", pedalboard.__version__)'
+          timeout --kill-after=5s 300s docker run -e PYTHONPATH=/test/candidate:/app "${common[@]}" /usr/local/bin/python -X faulthandler /smoke.py
