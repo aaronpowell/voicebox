@@ -1,0 +1,136 @@
+name: Engine isolation proof of concept
+
+on:
+  push:
+    branches:
+      - aaronpowell-fix-ivy-bridge-pedalboard
+    paths:
+      - ".github/workflows/test-engine-isolation-poc.yml"
+      - "scripts/engine-isolation-poc/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prototype:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      OMP_NUM_THREADS: "1"
+      OPENBLAS_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+      TOKENIZERS_PARALLELISM: "false"
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      HF_HUB_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record runner and disk
+        run: |
+          lscpu | grep -E 'Architecture|CPU\(s\)|Model name|Mem'
+          free -h
+          df -h "$RUNNER_TEMP"
+      - name: Install emulator and audio libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static espeak-ng libsndfile1 python3.12-venv
+      - name: Test worker protocol
+        run: python3 scripts/engine-isolation-poc/test_protocol.py
+      - name: Resolve host CPU environment
+        id: host_dependencies
+        continue-on-error: true
+        run: |
+          python3.12 -m venv "$RUNNER_TEMP/host"
+          timeout --kill-after=5s 600s "$RUNNER_TEMP/host/bin/python" -m pip install --no-cache-dir -r scripts/engine-isolation-poc/host-requirements.txt
+          "$RUNNER_TEMP/host/bin/python" -m pip freeze --all > "$RUNNER_TEMP/host-resolved.txt"
+          "$RUNNER_TEMP/host/bin/python" -m pip check
+          du -sh "$RUNNER_TEMP/host"
+          df -h "$RUNNER_TEMP"
+      - name: Resolve worker CPU environment
+        id: worker_dependencies
+        continue-on-error: true
+        run: |
+          python3.12 -m venv "$RUNNER_TEMP/worker"
+          timeout --kill-after=5s 600s "$RUNNER_TEMP/worker/bin/python" -m pip install --no-cache-dir -r scripts/engine-isolation-poc/worker-requirements.txt
+          "$RUNNER_TEMP/worker/bin/python" -m pip freeze --all > "$RUNNER_TEMP/worker-resolved.txt"
+          "$RUNNER_TEMP/worker/bin/python" -m pip check
+          du -sh "$RUNNER_TEMP/worker"
+          df -h "$RUNNER_TEMP"
+      - name: Check host native and Ivy Bridge imports
+        id: host_imports
+        if: steps.host_dependencies.outcome == 'success'
+        continue-on-error: true
+        run: |
+          for runner in native ivy; do
+            prefix=()
+            if [ "$runner" = ivy ]; then prefix=(/usr/bin/qemu-x86_64-static -cpu IvyBridge); fi
+            timeout --kill-after=5s 180s "${prefix[@]}" "$RUNNER_TEMP/host/bin/python" -c 'import numpy, numba, torch, torchaudio, transformers, kokoro, qwen_tts; print("HOST", numpy.__version__, numba.__version__, torch.__version__, torchaudio.__version__, transformers.__version__, flush=True); assert transformers.__version__ == "4.57.3"'
+          done
+      - name: Check worker native and Ivy Bridge imports
+        id: worker_imports
+        if: steps.worker_dependencies.outcome == 'success'
+        continue-on-error: true
+        run: |
+          for runner in native ivy; do
+            prefix=()
+            if [ "$runner" = ivy ]; then prefix=(/usr/bin/qemu-x86_64-static -cpu IvyBridge); fi
+            timeout --kill-after=5s 180s "${prefix[@]}" "$RUNNER_TEMP/worker/bin/python" -c 'import torch, torchaudio, transformers; from chatterbox.tts_turbo import ChatterboxTurboTTS; print("WORKER", torch.__version__, torchaudio.__version__, transformers.__version__, flush=True); assert transformers.__version__ == "5.2.0"'
+          done
+      - name: Download pinned Kokoro model
+        id: kokoro_download
+        if: steps.host_imports.outcome == 'success'
+        continue-on-error: true
+        env:
+          HF_HUB_OFFLINE: "0"
+        run: timeout --kill-after=5s 600s "$RUNNER_TEMP/host/bin/python" scripts/engine-isolation-poc/download.py kokoro "$RUNNER_TEMP/kokoro-model"
+      - name: Kokoro generation on Ivy Bridge
+        id: kokoro
+        if: steps.kokoro_download.outcome == 'success'
+        continue-on-error: true
+        run: |
+          timeout --kill-after=5s 600s /usr/bin/time -v /usr/bin/qemu-x86_64-static -cpu IvyBridge \
+            "$RUNNER_TEMP/host/bin/python" scripts/engine-isolation-poc/host.py kokoro --model-dir "$RUNNER_TEMP/kokoro-model"
+      - name: Download pinned Chatterbox Turbo model
+        id: chatterbox_download
+        if: steps.host_imports.outcome == 'success' && steps.worker_imports.outcome == 'success'
+        continue-on-error: true
+        env:
+          HF_HUB_OFFLINE: "0"
+        run: timeout --kill-after=5s 600s "$RUNNER_TEMP/host/bin/python" scripts/engine-isolation-poc/download.py chatterbox "$RUNNER_TEMP/chatterbox-model"
+      - name: Chatterbox worker generation on Ivy Bridge
+        id: chatterbox
+        if: steps.chatterbox_download.outcome == 'success'
+        continue-on-error: true
+        run: |
+          timeout --kill-after=5s 660s /usr/bin/time -v /usr/bin/qemu-x86_64-static -cpu IvyBridge \
+            "$RUNNER_TEMP/host/bin/python" scripts/engine-isolation-poc/host.py chatterbox \
+            --model-dir "$RUNNER_TEMP/chatterbox-model" --worker-python "$RUNNER_TEMP/worker/bin/python" \
+            --runner /usr/bin/qemu-x86_64-static --timeout 600
+      - name: Save resolved dependencies
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolation-poc-resolved-dependencies
+          path: |
+            ${{ runner.temp }}/host-resolved.txt
+            ${{ runner.temp }}/worker-resolved.txt
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Report generation outcomes
+        if: always()
+        env:
+          HOST_DEPENDENCIES: ${{ steps.host_dependencies.outcome }}
+          WORKER_DEPENDENCIES: ${{ steps.worker_dependencies.outcome }}
+          HOST_IMPORTS: ${{ steps.host_imports.outcome }}
+          WORKER_IMPORTS: ${{ steps.worker_imports.outcome }}
+          KOKORO_DOWNLOAD: ${{ steps.kokoro_download.outcome }}
+          KOKORO: ${{ steps.kokoro.outcome }}
+          CHATTERBOX_DOWNLOAD: ${{ steps.chatterbox_download.outcome }}
+          CHATTERBOX: ${{ steps.chatterbox.outcome }}
+        run: |
+          echo "Host dependencies=$HOST_DEPENDENCIES imports=$HOST_IMPORTS"
+          echo "Worker dependencies=$WORKER_DEPENDENCIES imports=$WORKER_IMPORTS"
+          echo "Kokoro download=$KOKORO_DOWNLOAD generation=$KOKORO"
+          echo "Chatterbox download=$CHATTERBOX_DOWNLOAD generation=$CHATTERBOX"
+          df -h "$RUNNER_TEMP"
+          [ "$KOKORO" = success ] && [ "$CHATTERBOX" = success ]

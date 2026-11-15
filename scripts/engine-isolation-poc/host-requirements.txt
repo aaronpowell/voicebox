@@ -1,0 +1,8 @@
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.6.0+cpu
+torchaudio==2.6.0+cpu
+numpy==1.26.4
+numba==0.60.0
+transformers==4.57.3
+qwen-tts==0.1.1
+kokoro==0.9.4
