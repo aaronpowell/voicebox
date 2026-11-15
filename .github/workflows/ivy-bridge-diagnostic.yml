@@ -31,15 +31,15 @@ jobs:
           python -m pip download --only-binary=:all: --no-deps --dest "$RUNNER_TEMP/ivy" pedalboard==0.9.26
           python -m zipfile -e "$RUNNER_TEMP/ivy/"*.whl "$RUNNER_TEMP/ivy/candidate"
           chmod -R a+rX "$RUNNER_TEMP/ivy"
-          common=(--rm --network none -v /usr/bin/qemu-x86_64-static:/qemu:ro -v "$RUNNER_TEMP/ivy:/test" --entrypoint /qemu "$image" -cpu IvyBridge)
+          common=(--rm --ulimit core=0:0 --network none -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 -v /usr/bin/qemu-x86_64-static:/qemu:ro -v "$RUNNER_TEMP/ivy:/test" --entrypoint /qemu "$image" -cpu IvyBridge)
           set +e
-          docker run "${common[@]}" -d in_asm -D /test/original-trace /usr/local/bin/python -X faulthandler -c 'import pedalboard; print(pedalboard.__version__)'
+          timeout --kill-after=5s 120s docker run "${common[@]}" -d in_asm -D /test/original-trace /usr/local/bin/python -X faulthandler -c 'import pedalboard; print(pedalboard.__version__)'
           status=$?
           set -e
           echo "Original wheel emulator exit status: $status"
           tail -n 100 "$RUNNER_TEMP/ivy/original-trace"
-          if [[ "$status" -eq 0 ]]; then
-            echo "::error::Original wheel unexpectedly succeeded under Ivy Bridge emulation"
+          if [[ "$status" -ne 132 ]]; then
+            echo "::error::Expected original wheel to exit with SIGILL (132), got $status"
             exit 1
           fi
-          docker run -e PYTHONPATH=/test/candidate "${common[@]}" /usr/local/bin/python -X faulthandler -c 'import pedalboard; print("Portable candidate:", pedalboard.__version__)'
+          timeout --kill-after=5s 120s docker run -e PYTHONPATH=/test/candidate "${common[@]}" /usr/local/bin/python -X faulthandler -c 'import pedalboard; print("Portable candidate:", pedalboard.__version__)'
