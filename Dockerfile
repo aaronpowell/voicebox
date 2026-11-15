@@ -56,7 +56,7 @@ ARG ROCM_VERSION=6.3
 RUN if [ "$PYTORCH_VARIANT" = "cpu" ]; then \
       pip install --no-cache-dir --prefix=/install \
         --index-url https://download.pytorch.org/whl/cpu \
-        torch torchaudio && \
+        torch==2.6.0 torchaudio==2.6.0 && \
       printf '[global]\nindex-url = https://download.pytorch.org/whl/cpu\nextra-index-url = https://pypi.org/simple\n' > /etc/pip.conf; \
     elif [ "$PYTORCH_VARIANT" = "rocm" ]; then \
       pip install --no-cache-dir --prefix=/install \
@@ -73,12 +73,11 @@ RUN if [ "$PYTORCH_VARIANT" = "cpu" ]; then \
 
 ENV PIP_CONSTRAINT=/tmp/torch-constraints.txt
 
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+RUN pip install --no-cache-dir --prefix=/install \
+    -r requirements.txt git+https://github.com/QwenLM/Qwen3-TTS.git
 RUN pip install --no-cache-dir --prefix=/install --no-deps chatterbox-tts
 RUN pip install --no-cache-dir --prefix=/install --no-deps hume-tada
 RUN pip install --no-cache-dir --prefix=/install --no-deps omnivoice
-RUN pip install --no-cache-dir --prefix=/install \
-    git+https://github.com/QwenLM/Qwen3-TTS.git
 
 
 # === Stage 3: Runtime ===

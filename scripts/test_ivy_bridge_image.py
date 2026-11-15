@@ -3,7 +3,10 @@
 import tempfile
 
 import numpy as np
+import torch
+import torchaudio
 from fastapi.testclient import TestClient
+from qwen_tts import Qwen3TTSModel
 
 from backend import config
 from backend.app import app
@@ -12,6 +15,13 @@ from backend.utils.effects import apply_effects
 
 
 def main() -> None:
+    assert torch.__version__.split("+")[0] == torchaudio.__version__.split("+")[0]
+    assert Qwen3TTSModel is not None
+    with torch.inference_mode():
+        resampled = torchaudio.functional.resample(torch.ones(1, 160), 16000, 8000)
+        assert resampled.shape == (1, 80)
+        assert torch.isfinite(resampled).all()
+
     signal = np.full(1024, 0.1, dtype=np.float32)
     processed = apply_effects(
         signal,
